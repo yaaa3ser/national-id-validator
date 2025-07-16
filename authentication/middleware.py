@@ -169,18 +169,6 @@ class DevelopmentAPIKeyMiddleware(MiddlewareMixin):
         if not getattr(settings, 'DEBUG', False):
             return None
         
-        # mock API key object for development
-        class MockAPIKey:
-            def __init__(self):
-                self.key = getattr(settings, 'DEFAULT_API_KEY', 'dev-key')
-                self.name = 'Development Key'
-                self.rate_limit_per_minute = 1000
-                self.rate_limit_per_hour = 10000
-                self.rate_limit_per_day = 100000
-            
-            def increment_usage(self):
-                pass
-        
         exempt_paths = ['/admin/', '/api/v1/health/', '/api/v1/docs/']
         if any(request.path.startswith(path) for path in exempt_paths):
             return None
@@ -189,6 +177,12 @@ class DevelopmentAPIKeyMiddleware(MiddlewareMixin):
             return None
         
         # Attach mock API key to request
-        request.api_key = MockAPIKey()
+        request.api_key = APIKey.objects.create(
+            key='dev-key',
+            name='Development Key',
+            rate_limit_per_minute=1000,
+            rate_limit_per_hour=10000,
+            rate_limit_per_day=100000
+        )
         
         return None

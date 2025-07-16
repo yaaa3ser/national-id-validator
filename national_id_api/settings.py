@@ -177,8 +177,8 @@ except:
     }
 
 # Session Configuration
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
+# SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+# SESSION_CACHE_ALIAS = 'default'
 
 # Celery Configuration (for async tasks)
 CELERY_BROKER_URL = config('REDIS_URL', default='redis://127.0.0.1:6379/0')
