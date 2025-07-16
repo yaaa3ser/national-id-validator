@@ -1,0 +1,172 @@
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: national_id_db
+    environment:
+      POSTGRES_DB: national_id_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - national_id_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: national_id_redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - national_id_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django Web Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: national_id_api
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate &&
+             python manage.py create_default_api_key &&
+             gunicorn national_id_api.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 120"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+      - logs_volume:/app/logs
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - SECRET_KEY=your-super-secret-production-key-change-this-in-production
+      - DATABASE_URL=postgresql://postgres:password@db:5432/national_id_db
+      - REDIS_URL=redis://redis:6379/0
+      - ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,web
+      - RATE_LIMIT_ENABLE=True
+      - RATE_LIMIT_PER_MINUTE=1000
+      - API_KEY_HEADER=X-API-Key
+      - DEFAULT_API_KEY=production-api-key-12345-change-this
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - national_id_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Celery Worker (for background tasks)
+  # celery:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: national_id_celery
+  #   command: celery -A national_id_api worker --loglevel=info --concurrency=2
+  #   volumes:
+  #     - .:/app
+  #     - logs_volume:/app/logs
+  #   environment:
+  #     - DEBUG=False
+  #     - SECRET_KEY=your-super-secret-production-key-change-this-in-production
+  #     - DATABASE_URL=postgresql://postgres:password@db:5432/national_id_db
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - CELERY_RESULT_BACKEND=redis://redis:6379/0
+  #   depends_on:
+  #     - db
+  #     - redis
+  #   networks:
+  #     - national_id_network
+  #   restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: national_id_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - web
+    networks:
+      - national_id_network
+    restart: unless-stopped
+
+  # Development Database (SQLite) - for development only
+  dev-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: national_id_api_dev
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py create_default_api_key &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+      - logs_volume:/app/logs
+    ports:
+      - "8001:8000"
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=dev-secret-key-not-for-production
+      - REDIS_URL=redis://redis:6379/1
+      - ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,dev-web
+      - RATE_LIMIT_ENABLE=True
+      - RATE_LIMIT_PER_MINUTE=100
+      - API_KEY_HEADER=X-API-Key
+      - DEFAULT_API_KEY=dev-api-key-12345
+    depends_on:
+      - redis
+    networks:
+      - national_id_network
+    profiles:
+      - development
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  media_volume:
+    driver: local
+  logs_volume:
+    driver: local
+
+networks:
+  national_id_network:
+    driver: bridge
